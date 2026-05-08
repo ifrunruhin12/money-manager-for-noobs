@@ -1,0 +1,8 @@
+.kiro/
+high-level-idea/
+
+# Environment secrets
+.env
+
+# Build output
+money-manager
