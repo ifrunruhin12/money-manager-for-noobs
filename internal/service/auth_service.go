@@ -18,11 +18,6 @@ import (
 	"github.com/ifrunruhin12/money-manager/internal/utils"
 )
 
-const (
-	DefaultCurrency = "BDT"
-	DefaultTimezone = "UTC"
-)
-
 var defaultCategories = []string{
 	"Food", "Transport", "Extra Food", "Health", "Big Buy", "Savings", "Hobby",
 }
@@ -65,10 +60,8 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Normalize email before any validation or lookup
 	email = strings.TrimSpace(strings.ToLower(email))
 
-	// Validate inputs
 	if !emailRegex.MatchString(email) {
 		return "", fmt.Errorf("%w: invalid email format", domain.ErrValidation)
 	}
@@ -76,7 +69,7 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 		return "", fmt.Errorf("%w: password must be at least 8 characters", domain.ErrValidation)
 	}
 
-	// Pre-check for existing email (best-effort; DB constraint is the real guard — see below)
+	// Best-effort pre-check; DB unique constraint is the real guard against races.
 	_, err := s.users.GetByEmail(ctx, email)
 	if err == nil {
 		return "", domain.ErrConflict
@@ -85,7 +78,6 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 		return "", fmt.Errorf("check existing email: %w", err)
 	}
 
-	// Hash password
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return "", fmt.Errorf("hash password: %w", err)
@@ -94,8 +86,7 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 	userID := uuid.New().String()
 	now := time.Now().UTC()
 
-	// Single DB transaction: user → account → default categories
-	// All SQL lives in the repository layer; service only orchestrates.
+	// Single DB transaction: user → account → default categories.
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
@@ -109,8 +100,8 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err = s.users.InsertTx(ctx, tx, user); err != nil {
-		// Handle TOCTOU race: concurrent registration with same email
+	if err = s.users.Insert(ctx, tx, user); err != nil {
+		// Handle TOCTOU race: concurrent registration with same email.
 		if errors.Is(err, domain.ErrConflict) {
 			return "", domain.ErrConflict
 		}
@@ -123,11 +114,11 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 		StartingBalance: 0,
 		CurrentBalance:  0,
 		BalanceDirty:    false,
-		Currency:        DefaultCurrency,
-		Timezone:        DefaultTimezone,
+		Currency:        "BDT",
+		Timezone:        "UTC",
 		CreatedAt:       now,
 	}
-	if err = s.accounts.InsertTx(ctx, tx, account); err != nil {
+	if err = s.accounts.Insert(ctx, tx, account); err != nil {
 		return "", fmt.Errorf("insert account: %w", err)
 	}
 
@@ -138,7 +129,7 @@ func (s *authService) Register(ctx context.Context, email, password string) (str
 			Name:      name,
 			CreatedAt: now,
 		}
-		if err = s.categories.InsertTx(ctx, tx, cat); err != nil {
+		if err = s.categories.Insert(ctx, tx, cat); err != nil {
 			return "", fmt.Errorf("insert category %q: %w", name, err)
 		}
 	}
@@ -159,7 +150,6 @@ func (s *authService) Login(ctx context.Context, email, password string) (string
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Normalize email before lookup
 	email = strings.TrimSpace(strings.ToLower(email))
 
 	if !emailRegex.MatchString(email) {
@@ -169,7 +159,7 @@ func (s *authService) Login(ctx context.Context, email, password string) (string
 		return "", fmt.Errorf("%w: password is required", domain.ErrValidation)
 	}
 
-	// Map ErrNotFound → ErrUnauthorized to prevent user enumeration
+	// Map ErrNotFound → ErrUnauthorized to prevent user enumeration.
 	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {

@@ -1,0 +1,132 @@
+package repository
+
+import (
+	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ifrunruhin12/money-manager/internal/domain"
+)
+
+// BigBuyRepository defines persistence operations for big buy entries.
+// Mutating methods accept a DBTX so callers can pass either a *pgxpool.Pool
+// or a pgx.Tx (inside a caller-managed transaction).
+type BigBuyRepository interface {
+	// Insert persists a new big buy entry.
+	Insert(ctx context.Context, db DBTX, b domain.BigBuy) error
+	// Update persists changes to an existing big buy entry.
+	Update(ctx context.Context, db DBTX, b domain.BigBuy) error
+	// Delete soft-deletes a big buy by setting deleted_at = NOW().
+	Delete(ctx context.Context, db DBTX, id string) error
+
+	// ListByMonth returns all non-deleted big buys for a user in the given month, sorted date ASC.
+	ListByMonth(ctx context.Context, userID string, year int, month int) ([]domain.BigBuy, error)
+	// SumByDateRange returns the sum of amounts for all non-deleted big buys in [from, to].
+	SumByDateRange(ctx context.Context, userID string, from, to time.Time) (int, error)
+}
+
+type bigBuyRepository struct {
+	db *pgxpool.Pool
+}
+
+// NewBigBuyRepository creates a new BigBuyRepository backed by the given pool.
+func NewBigBuyRepository(db *pgxpool.Pool) BigBuyRepository {
+	return &bigBuyRepository{db: db}
+}
+
+const bigBuySelectCols = `id, user_id, title, amount, category_id, note, date, deleted_at, created_at`
+
+func scanBigBuyRow(rows pgx.Rows) (domain.BigBuy, error) {
+	var b domain.BigBuy
+	err := rows.Scan(
+		&b.ID, &b.UserID, &b.Title, &b.Amount, &b.CategoryID,
+		&b.Note, &b.Date, &b.DeletedAt, &b.CreatedAt,
+	)
+	return b, err
+}
+
+func (r *bigBuyRepository) Insert(ctx context.Context, db DBTX, b domain.BigBuy) error {
+	_, err := db.Exec(ctx,
+		`INSERT INTO big_buys (id, user_id, title, amount, category_id, note, date, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		b.ID, b.UserID, b.Title, b.Amount, b.CategoryID, b.Note, b.Date, b.CreatedAt,
+	)
+	return err
+}
+
+func (r *bigBuyRepository) Update(ctx context.Context, db DBTX, b domain.BigBuy) error {
+	tag, err := db.Exec(ctx,
+		`UPDATE big_buys
+		 SET title = $1, amount = $2, category_id = $3, note = $4, date = $5
+		 WHERE id = $6 AND user_id = $7 AND deleted_at IS NULL`,
+		b.Title, b.Amount, b.CategoryID, b.Note, b.Date,
+		b.ID, b.UserID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *bigBuyRepository) Delete(ctx context.Context, db DBTX, id string) error {
+	tag, err := db.Exec(ctx,
+		`UPDATE big_buys
+		 SET deleted_at = NOW()
+		 WHERE id = $1 AND deleted_at IS NULL`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *bigBuyRepository) ListByMonth(ctx context.Context, userID string, year int, month int) ([]domain.BigBuy, error) {
+	monthStart := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, 0).Add(-time.Nanosecond)
+
+	rows, err := r.db.Query(ctx,
+		`SELECT `+bigBuySelectCols+`
+		 FROM big_buys
+		 WHERE user_id = $1
+		   AND date BETWEEN $2 AND $3
+		   AND deleted_at IS NULL
+		 ORDER BY date ASC`,
+		userID, monthStart, monthEnd,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var buys []domain.BigBuy
+	for rows.Next() {
+		b, err := scanBigBuyRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		buys = append(buys, b)
+	}
+	return buys, rows.Err()
+}
+
+func (r *bigBuyRepository) SumByDateRange(ctx context.Context, userID string, from, to time.Time) (int, error) {
+	var sum int
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(amount), 0)
+		 FROM big_buys
+		 WHERE user_id = $1
+		   AND date BETWEEN $2 AND $3
+		   AND deleted_at IS NULL`,
+		userID, from, to,
+	).Scan(&sum)
+	return sum, err
+}

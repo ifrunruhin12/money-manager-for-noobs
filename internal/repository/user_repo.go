@@ -15,12 +15,11 @@ const (
 	pgErrCodeUniqueViolation = "23505"
 )
 
+// UserRepository defines persistence operations for users.
 type UserRepository interface {
-	Insert(ctx context.Context, user domain.User) error
+	Insert(ctx context.Context, db DBTX, user domain.User) error
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByID(ctx context.Context, id string) (*domain.User, error)
-	// InsertTx inserts a new user within an existing transaction.
-	InsertTx(ctx context.Context, tx pgx.Tx, user domain.User) error
 }
 
 type userRepository struct {
@@ -32,9 +31,10 @@ func NewUserRepository(db *pgxpool.Pool) UserRepository {
 	return &userRepository{db: db}
 }
 
-// Insert persists a new user. Returns domain.ErrConflict if the email already exists.
-func (r *userRepository) Insert(ctx context.Context, user domain.User) error {
-	_, err := r.db.Exec(ctx,
+// Insert persists a new user using the provided DBTX (pool or tx).
+// Returns domain.ErrConflict if the email already exists.
+func (r *userRepository) Insert(ctx context.Context, db DBTX, user domain.User) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO users (id, email, password_hash, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		user.ID, user.Email, user.PasswordHash, user.CreatedAt, user.UpdatedAt,
@@ -81,22 +81,4 @@ func (r *userRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		return nil, err
 	}
 	return &u, nil
-}
-
-// InsertTx inserts a new user within the provided transaction.
-// Returns domain.ErrConflict if the email already exists (pg error 23505).
-func (r *userRepository) InsertTx(ctx context.Context, tx pgx.Tx, user domain.User) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO users (id, email, password_hash, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		user.ID, user.Email, user.PasswordHash, user.CreatedAt, user.UpdatedAt,
-	)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeUniqueViolation {
-			return domain.ErrConflict
-		}
-		return err
-	}
-	return nil
 }
