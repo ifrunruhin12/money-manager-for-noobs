@@ -1,77 +1,98 @@
 # Money Manager for Noobs
 
-A personal money management + live simulation backend app built for learning and actually fixing my own bad money habits.
+A minimal personal finance backend focused on balance tracking, financial projections, and learning backend engineering through building real systems.
+
+Built with Go and PostgreSQL.
+
+---
 
 ## Why this exists
 
-I’m pretty bad at managing money, so instead of just suffering like a normal person, I decided to build a system for myself.
-There are already tons of finance apps out there, but this one is **personalized, minimal, and built while I learn backend engineering properly**.
+I originally built this project to fix my own terrible money management habits while learning backend engineering properly.
 
-This project is also me leveling up in:
+Instead of using a generic finance app, I wanted something:
+
+* personalized
+* minimal
+* simulation-focused
+* and architected in a way that teaches me real backend concepts
+
+This project became a playground for learning:
 
 * Go (Golang)
 * Backend architecture
-* Authentication systems (JWT)
-* Databases (PostgreSQL)
-* Clean layered design (handler → service → repo)
+* PostgreSQL
+* Authentication systems
+* Financial data consistency
+* Transaction-safe operations
 
-## Features (so far)
+---
+
+## Features
 
 ### Authentication
 
 * User registration & login
+* JWT-based authentication
 * Password hashing with bcrypt
-* JWT-based auth system
-* Protected routes with middleware
+* Protected API routes
 
-### Core Finance System
+### Finance System
 
-* User account with balance tracking
-* Transaction system (planned/ongoing)
-* Category-based spending structure:
+* Account balance tracking
+* Transaction management
+* Skip/restore transactions
+* Override transaction system
+* Big buy tracking
+* Category-based expenses
+* Event logging
 
-  * Food
-  * Transport
-  * Health
-  * Savings
-  * Hobby
-  * Big Buy
-  * Extra Food
+### Architecture
 
-### System Design
-
-* Clean layered architecture
-* Repository pattern for DB access
-* Service layer for business logic
+* Clean layered design
+* Repository + service pattern
 * PostgreSQL with migrations
-* Transaction-safe operations
+* Transaction-safe database operations
+* Atomic balance updates
+* Dockerized development setup
+
+---
 
 ## Tech Stack
 
 * Go (Golang)
 * PostgreSQL
-* Gin (HTTP framework)
-* JWT (auth)
-* bcrypt (security)
-* Docker (deployment/dev setup)
+* Gin
+* JWT
+* Docker
+* pgx
+
+---
 
 ## Current Status
 
-* Phase 0 (Authentication system) (mostly done)
-* Backend API running with Docker
-* Database migrations automated
-* Ready to build Phase 1 features (transactions, analytics, etc.)
+* Core backend architecture mostly complete
+* Authentication system implemented
+* Financial transaction system implemented
+* Big buy system implemented
+* API handlers/routes in progress
+* Flutter frontend planned next
+
+---
 
 ## Goal
 
-Build a **fully personalized finance + simulation system** that helps me:
+Build a personalized finance system that helps me:
 
-* Understand my spending behavior
-* Track money properly
-* Experiment with financial rules and simulations
-* And obviously… become better at backend engineering
+* understand spending habits
+* simulate financial decisions
+* track money properly
+* and grow into a better backend engineer while building real software
+
+---
 
 ## Notes
 
-This is not a production-grade fintech app (not yet).
-It’s a learning-driven system that evolves as I level up.
+This is currently an MVP and learning-focused project.
+
+The system is intentionally designed to evolve over time as I improve the architecture, add features, and scale the project beyond personal use.
