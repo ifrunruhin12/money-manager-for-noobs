@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/ifrunruhin12/money-manager/internal/api"
 	"github.com/ifrunruhin12/money-manager/internal/config"
 	"github.com/ifrunruhin12/money-manager/internal/db"
+	"github.com/ifrunruhin12/money-manager/internal/handler"
+	"github.com/ifrunruhin12/money-manager/internal/repository"
+	"github.com/ifrunruhin12/money-manager/internal/service"
 	"github.com/ifrunruhin12/money-manager/pkg/logger"
 )
 
@@ -41,6 +46,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Step 5: Startup complete.
-	log.Info("ready")
+	// Step 5: Build dependency graph — db → repos → services → handlers → router
+
+	// Repositories
+	userRepo := repository.NewUserRepository(pool)
+	accountRepo := repository.NewAccountRepository(pool)
+	categoryRepo := repository.NewCategoryRepository(pool)
+	transactionRepo := repository.NewTransactionRepository(pool)
+	bigBuyRepo := repository.NewBigBuyRepository(pool)
+
+	// Services
+	authService := service.NewAuthService(pool, userRepo, accountRepo, categoryRepo, cfg)
+	balanceService := service.NewBalanceService(accountRepo, transactionRepo, bigBuyRepo, cfg.BalanceStalenessThreshold, log)
+	categoryService := service.NewCategoryService(categoryRepo, pool)
+	transactionService := service.NewTransactionService(pool, transactionRepo, accountRepo, cfg.EnableEventLog, log)
+	bigBuyService := service.NewBigBuyService(pool, bigBuyRepo, accountRepo, cfg.EnableEventLog, log)
+
+	// Handlers
+	authHandler := handler.NewAuthHandler(authService)
+	accountHandler := handler.NewAccountHandler(balanceService, accountRepo)
+	transactionHandler := handler.NewTransactionHandler(transactionService)
+	categoryHandler := handler.NewCategoryHandler(categoryService)
+	bigBuyHandler := handler.NewBigBuyHandler(bigBuyService)
+
+	// Router
+	router := api.NewRouter(
+		cfg.JWTSecret,
+		cfg.RateLimitRPM,
+		log,
+		pool, // Pass DB pool for health check
+		authHandler,
+		accountHandler,
+		transactionHandler,
+		categoryHandler,
+		bigBuyHandler,
+	)
+
+	// Step 6: Start HTTP server
+	addr := fmt.Sprintf(":%s", cfg.Port)
+	log.Info("starting HTTP server", "addr", addr)
+	if err := router.Run(addr); err != nil {
+		log.Error("failed to start server", "err", err)
+		os.Exit(1)
+	}
 }

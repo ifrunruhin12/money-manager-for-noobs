@@ -1,0 +1,1168 @@
+openapi: 3.0.3
+info:
+  title: Money Manager API
+  description: |
+    A rule-driven financial simulation and tracking system. The Money Manager operates in two layers:
+    - **Simulation Layer**: Automatically generates predicted expenses from configurable rules
+    - **Reality Layer**: Users record actual transactions that override or supplement simulated values
+    
+    The system maintains a running balance, auto-generates daily expenses, supports manual overrides,
+    and provides real-time financial status tracking.
+  version: 1.0.0
+  contact:
+    name: Money Manager API Support
+    email: support@moneymanager.example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server (direct)
+  - url: http://localhost:8080/api/v1
+    description: Docker development server
+  - url: https://api.moneymanager.example.com/api/v1
+    description: Production server
+
+tags:
+  - name: Authentication
+    description: User registration and login endpoints
+  - name: Account
+    description: Account balance and settings management
+  - name: Transactions
+    description: Financial transaction management
+  - name: Categories
+    description: Transaction category management
+  - name: Big Buys
+    description: Large one-time purchase tracking
+  - name: Health
+    description: Service health check
+
+security:
+  - BearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns service health status and database connectivity
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: money-manager
+                  database:
+                    type: string
+                    example: ok
+        '503':
+          description: Service is degraded (database unreachable)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: degraded
+                  service:
+                    type: string
+                    example: money-manager
+                  database:
+                    type: string
+                    example: unreachable
+
+  /auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user
+      description: |
+        Creates a new user account with email and password. On successful registration:
+        - User record is created with bcrypt-hashed password
+        - Default account is created with starting balance 0
+        - Default categories are seeded (Food, Transport, Extra Food, Health, Big Buy, Savings, Hobby)
+        - JWT token is returned for immediate authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: securepassword123
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+                            description: JWT token for authentication
+                            example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        '400':
+          description: Invalid request (email format invalid or password too short)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Login with email and password
+      description: Authenticates a user and returns a JWT token valid for 24 hours
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: securepassword123
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+                            description: JWT token for authentication
+                            example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /balance:
+    get:
+      tags:
+        - Account
+      summary: Get current account balance
+      description: |
+        Returns the current account balance. The balance is computed as:
+        `starting_balance + sum(all non-skipped, non-overridden transactions) + sum(all big buys)`
+        
+        If the cached balance is stale or dirty, it will be recomputed from the database.
+      responses:
+        '200':
+          description: Balance retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          balance:
+                            type: integer
+                            description: Current balance in smallest currency unit (e.g., cents)
+                            example: 50000
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /account/balance:
+    patch:
+      tags:
+        - Account
+      summary: Update starting balance
+      description: |
+        Updates the account's starting balance and triggers a reconciliation.
+        This is typically used when setting up the account for the first time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - balance
+              properties:
+                balance:
+                  type: integer
+                  description: New starting balance in smallest currency unit
+                  example: 100000
+      responses:
+        '200':
+          description: Starting balance updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          balance:
+                            type: integer
+                            example: 100000
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /account/timezone:
+    patch:
+      tags:
+        - Account
+      summary: Update account timezone
+      description: |
+        Updates the user's timezone preference. All day boundaries and monthly projections
+        will be computed using this timezone. Must be a valid IANA timezone string.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - timezone
+              properties:
+                timezone:
+                  type: string
+                  description: IANA timezone string
+                  example: Asia/Dhaka
+      responses:
+        '200':
+          description: Timezone updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          timezone:
+                            type: string
+                            example: Asia/Dhaka
+        '400':
+          description: Invalid timezone string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /account/reconcile:
+    post:
+      tags:
+        - Account
+      summary: Force balance reconciliation
+      description: |
+        Forces a full balance recomputation from the database and compares it with
+        the cached value. Returns whether a mismatch was detected.
+      responses:
+        '200':
+          description: Reconciliation completed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          reconciled:
+                            type: boolean
+                            example: true
+                          mismatch:
+                            type: boolean
+                            description: Whether cached balance differed from true balance
+                            example: false
+                          balance:
+                            type: integer
+                            description: True balance after reconciliation
+                            example: 50000
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /transactions:
+    post:
+      tags:
+        - Transactions
+      summary: Create a manual transaction
+      description: |
+        Creates a new manual transaction. Negative amounts represent expenses,
+        positive amounts represent income, refunds, or corrections.
+        The transaction is immediately applied to the account balance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - category_id
+                - amount
+                - date
+              properties:
+                category_id:
+                  type: string
+                  format: uuid
+                  example: 550e8400-e29b-41d4-a716-446655440000
+                amount:
+                  type: integer
+                  description: Transaction amount (negative for expenses, positive for income)
+                  example: -500
+                date:
+                  type: string
+                  format: date-time
+                  example: '2024-01-15T10:30:00Z'
+                note:
+                  type: string
+                  example: Lunch at restaurant
+      responses:
+        '201':
+          description: Transaction created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          transaction:
+                            $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - Transactions
+      summary: List transactions by date range
+      description: |
+        Returns transactions within a date range, sorted by date descending.
+        Supports cursor-based pagination for efficient large result sets.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          example: '2024-01-01T00:00:00Z'
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          example: '2024-01-31T23:59:59Z'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+          example: 50
+        - name: cursor_date
+          in: query
+          description: Cursor date for pagination (from previous response)
+          schema:
+            type: string
+            format: date-time
+        - name: cursor_id
+          in: query
+          description: Cursor ID for pagination (from previous response)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          transactions:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Transaction'
+                          next_cursor:
+                            type: object
+                            nullable: true
+                            properties:
+                              date:
+                                type: string
+                                format: date-time
+                              id:
+                                type: string
+                                format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /transactions/{id}/override:
+    patch:
+      tags:
+        - Transactions
+      summary: Override a transaction
+      description: |
+        Creates an override transaction that replaces the original transaction's amount.
+        The original transaction is marked as overridden and excluded from balance calculations.
+        Only the override amount is used in all calculations.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+              properties:
+                amount:
+                  type: integer
+                  description: New amount for the transaction
+                  example: -750
+                note:
+                  type: string
+                  example: Actual amount was higher
+      responses:
+        '200':
+          description: Transaction overridden successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          transaction:
+                            $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /transactions/{id}/skip:
+    patch:
+      tags:
+        - Transactions
+      summary: Skip a transaction
+      description: |
+        Marks a transaction as skipped. Skipped transactions are excluded from all
+        balance, projection, and dashboard calculations.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Transaction skipped successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          skipped:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /transactions/{id}/restore:
+    patch:
+      tags:
+        - Transactions
+      summary: Restore a skipped transaction
+      description: |
+        Restores a previously skipped transaction, re-including it in all calculations.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Transaction restored successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          restored:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /transactions/{id}/history:
+    get:
+      tags:
+        - Transactions
+      summary: Get transaction history
+      description: |
+        Returns the complete history of a transaction, including the original record
+        and all override transactions in chronological order.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Transaction history retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          history:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /categories:
+    post:
+      tags:
+        - Categories
+      summary: Create a new category
+      description: |
+        Creates a new category for organizing transactions. Category names must be
+        unique per user and between 1-100 characters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  example: Entertainment
+      responses:
+        '201':
+          description: Category created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '409':
+          description: Category name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - Categories
+      summary: List all categories
+      description: Returns all categories for the authenticated user
+      responses:
+        '200':
+          description: Categories retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          categories:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Category'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /categories/{id}:
+    patch:
+      tags:
+        - Categories
+      summary: Update a category
+      description: Updates a category's name. The new name must be unique per user.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  example: Entertainment & Leisure
+      responses:
+        '200':
+          description: Category updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: Category name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Categories
+      summary: Delete a category
+      description: |
+        Deletes a category. Deletion is blocked if any transactions or big buys
+        reference this category. Those records must be reassigned first.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Category deleted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: Category is referenced by transactions or big buys
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /big-buys:
+    post:
+      tags:
+        - Big Buys
+      summary: Create a big buy
+      description: |
+        Creates a new big buy entry. Big buys are large one-time purchases tracked
+        separately from regular transactions. Amount should be positive (stored as negative internally).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - amount
+                - category_id
+                - date
+              properties:
+                title:
+                  type: string
+                  example: New Laptop
+                amount:
+                  type: integer
+                  description: Purchase amount (positive value, stored as negative)
+                  example: 50000
+                category_id:
+                  type: string
+                  format: uuid
+                  example: 550e8400-e29b-41d4-a716-446655440000
+                date:
+                  type: string
+                  format: date-time
+                  example: '2024-01-15T00:00:00Z'
+                note:
+                  type: string
+                  example: MacBook Pro 16"
+      responses:
+        '201':
+          description: Big buy created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          big_buy:
+                            $ref: '#/components/schemas/BigBuy'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+    get:
+      tags:
+        - Big Buys
+      summary: List big buys by month
+      description: Returns all big buys for a specific month, sorted by date ascending
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+          example: '2024-01'
+          description: Month in YYYY-MM format
+      responses:
+        '200':
+          description: Big buys retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          big_buys:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/BigBuy'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /big-buys/{id}:
+    patch:
+      tags:
+        - Big Buys
+      summary: Update a big buy
+      description: |
+        Updates a big buy entry. The balance and projections are recalculated
+        to reflect the updated amount and date.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - amount
+                - category_id
+                - date
+              properties:
+                title:
+                  type: string
+                  example: New Laptop
+                amount:
+                  type: integer
+                  example: 55000
+                category_id:
+                  type: string
+                  format: uuid
+                date:
+                  type: string
+                  format: date-time
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Big buy updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          big_buy:
+                            $ref: '#/components/schemas/BigBuy'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+    delete:
+      tags:
+        - Big Buys
+      summary: Delete a big buy
+      description: |
+        Soft deletes a big buy entry. The balance and projections are recalculated
+        to exclude this purchase.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Big buy deleted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted:
+                            type: boolean
+                            example: true
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token obtained from /auth/register or /auth/login.
+        Include in the Authorization header as: `Bearer <token>`
+
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+        data:
+          type: object
+          description: Response data (structure varies by endpoint)
+
+    ErrorResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: Invalid request
+
+    Transaction:
+      type: object
+      properties:
+        ID:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        UserID:
+          type: string
+          format: uuid
+        Type:
+          type: string
+          enum: [manual, rule_generated, override]
+          example: manual
+        CategoryID:
+          type: string
+          format: uuid
+        Amount:
+          type: integer
+          description: Transaction amount (negative for expenses, positive for income)
+          example: -500
+        IsSkipped:
+          type: boolean
+          example: false
+        IsOverridden:
+          type: boolean
+          example: false
+        SourceID:
+          type: string
+          format: uuid
+          nullable: true
+        SourceType:
+          type: string
+          enum: [rule, consumable, transaction]
+          nullable: true
+        Note:
+          type: string
+          example: Lunch at restaurant
+        Date:
+          type: string
+          format: date-time
+        GenerationDate:
+          type: string
+          format: date
+          nullable: true
+        UpdatedAt:
+          type: string
+          format: date-time
+        DeletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        CreatedAt:
+          type: string
+          format: date-time
+
+    Category:
+      type: object
+      properties:
+        ID:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        UserID:
+          type: string
+          format: uuid
+        Name:
+          type: string
+          example: Food
+        CreatedAt:
+          type: string
+          format: date-time
+
+    BigBuy:
+      type: object
+      properties:
+        ID:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        UserID:
+          type: string
+          format: uuid
+        Title:
+          type: string
+          example: New Laptop
+        Amount:
+          type: integer
+          description: Purchase amount (stored as negative)
+          example: -50000
+        CategoryID:
+          type: string
+          format: uuid
+        Note:
+          type: string
+          example: MacBook Pro 16"
+        Date:
+          type: string
+          format: date-time
+        DeletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        CreatedAt:
+          type: string
+          format: date-time
+
+  responses:
+    UnauthorizedError:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            ok: false
+            error: unauthorized
+
+    BadRequestError:
+      description: Invalid request parameters or body
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            ok: false
+            error: invalid request body
+
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            ok: false
+            error: resource not found

@@ -31,6 +31,9 @@ COPY --from=builder /money-manager /app/money-manager
 # Copy migrations
 COPY migrations/ /app/migrations/
 
+# Copy docs (for Swagger)
+COPY docs/ /app/docs/
+
 # Copy entrypoint script
 COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
 

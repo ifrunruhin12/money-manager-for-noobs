@@ -95,7 +95,7 @@ func buildTestServer(t *testing.T, dbURL, jwtSecret string) *httptest.Server {
 	categoryH := handler.NewCategoryHandler(categorySvc)
 	bigBuyH := handler.NewBigBuyHandler(bigBuySvc)
 
-	router := api.NewRouter(jwtSecret, authH, accountH, transactionH, categoryH, bigBuyH)
+	router := api.NewRouter(jwtSecret, 1000, log, pool, authH, accountH, transactionH, categoryH, bigBuyH)
 
 	srv := httptest.NewServer(router)
 	return srv
@@ -204,4 +204,117 @@ func TestAuthSmokeTest(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, resp.StatusCode,
 		"GET /balance with valid token should return 200; body: %v", body)
+}
+
+// TestMVPEndToEndSmokeTest is the Phase 4 checkpoint integration test.
+//
+// It verifies the complete MVP flow end-to-end:
+//  1. Register a user (creates user + account + default categories)
+//  2. Verify default categories exist
+//  3. Create a manual transaction
+//  4. GET /balance and verify it reflects the transaction
+//
+// At this point the system is usable: you can set a balance, record transactions,
+// manage categories, and track big buys via HTTP.
+func TestMVPEndToEndSmokeTest(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+	jwtSecret := "test-secret-mvp-smoke"
+
+	srv := buildTestServer(t, dbURL, jwtSecret)
+	defer srv.Close()
+
+	email := fmt.Sprintf("mvp+%d@example.com", time.Now().UnixNano())
+	password := "mvppassword123"
+
+	// ── Step 1: Register user ───────────────────────────────────────────────
+	// Registration creates user + account (starting balance 0) + default categories
+	resp := postJSON(t, srv, "/api/v1/auth/register", map[string]string{
+		"email":    email,
+		"password": password,
+	}, "")
+	body := decodeBody(t, resp)
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"register should return 201; body: %v", body)
+
+	data, ok := body["data"].(map[string]any)
+	require.True(t, ok, "response should have a 'data' object; body: %v", body)
+
+	token, ok := data["token"].(string)
+	require.True(t, ok && token != "", "register response should contain a non-empty token; data: %v", data)
+
+	// ── Step 2: Verify default categories exist ─────────────────────────────
+	resp = getJSON(t, srv, "/api/v1/categories", token)
+	body = decodeBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"GET /categories should return 200; body: %v", body)
+
+	data, ok = body["data"].(map[string]any)
+	require.True(t, ok, "categories response should have a 'data' object; body: %v", body)
+
+	categories, ok := data["categories"].([]any)
+	require.True(t, ok && len(categories) > 0,
+		"should have default categories seeded; data: %v", data)
+
+	// Extract the first category ID for use in transaction creation
+	firstCategory := categories[0].(map[string]any)
+	categoryID, ok := firstCategory["ID"].(string)
+	require.True(t, ok && categoryID != "", "category should have an ID; category: %v", firstCategory)
+
+	// ── Step 3: Get initial balance (should be 0) ───────────────────────────
+	resp = getJSON(t, srv, "/api/v1/balance", token)
+	body = decodeBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"GET /balance should return 200; body: %v", body)
+
+	data, ok = body["data"].(map[string]any)
+	require.True(t, ok, "balance response should have a 'data' object; body: %v", body)
+
+	initialBalance, ok := data["balance"].(float64)
+	require.True(t, ok, "balance should be a number; data: %v", data)
+	require.Equal(t, float64(0), initialBalance, "initial balance should be 0")
+
+	// ── Step 4: Create a manual transaction (expense: -500) ────────────────
+	transactionAmount := -500
+	resp = postJSON(t, srv, "/api/v1/transactions", map[string]any{
+		"category_id": categoryID,
+		"amount":      transactionAmount,
+		"note":        "Test expense transaction",
+		"date":        time.Now().Format(time.RFC3339),
+	}, token)
+	body = decodeBody(t, resp)
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"POST /transactions should return 201; body: %v", body)
+
+	data, ok = body["data"].(map[string]any)
+	require.True(t, ok, "transaction response should have a 'data' object; body: %v", body)
+
+	transaction, ok := data["transaction"].(map[string]any)
+	require.True(t, ok, "data should contain a 'transaction' object; data: %v", data)
+
+	txID, ok := transaction["ID"].(string)
+	require.True(t, ok && txID != "", "transaction should have an ID; transaction: %v", transaction)
+
+	// ── Step 5: Get balance and verify it reflects the transaction ─────────
+	resp = getJSON(t, srv, "/api/v1/balance", token)
+	body = decodeBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"GET /balance should return 200; body: %v", body)
+
+	data, ok = body["data"].(map[string]any)
+	require.True(t, ok, "balance response should have a 'data' object; body: %v", body)
+
+	finalBalance, ok := data["balance"].(float64)
+	require.True(t, ok, "balance should be a number; data: %v", data)
+
+	expectedBalance := float64(transactionAmount)
+	require.Equal(t, expectedBalance, finalBalance,
+		"balance should equal transaction amount (0 + %d = %d); got: %v",
+		transactionAmount, transactionAmount, finalBalance)
+
+	t.Logf("✓ MVP smoke test passed: user registered, categories seeded, transaction created, balance verified")
 }
